@@ -1,74 +1,71 @@
 "use client"
 
-import React from 'react';
-import { Button, Card, CircularProgress, Container, Typography, Box, Alert, Stack } from '@mui/material';
-import DownloadingIcon from '@mui/icons-material/Downloading';
-import DoneAllIcon from '@mui/icons-material/DoneAll';
-import ErrorIcon from '@mui/icons-material/Error';
+import React, { useState, useEffect } from 'react'
+import { Button } from "@/components/ui/button"
+import { Card } from "@/components/ui/card"
+import { Progress } from "@/components/ui/progress"
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
+import { Download, Check, AlertCircle } from "lucide-react"
 
 export default function InstalacaoPage() {
-  return (
-    <Container maxWidth="sm" sx={{ py: 4 }}>
-      <Card sx={{ p: 3, borderRadius: 2, boxShadow: 3 }}>
-        <InstallationManager />
-      </Card>
-    </Container>
-  );
-}
+  // Estados da instalação
+  const [status, setStatus] = useState<'waiting' | 'downloading' | 'complete' | 'error'>('waiting')
+  const [progress, setProgress] = useState(0)
+  const [message, setMessage] = useState('')
+  const [isAppInstalled, setIsAppInstalled] = useState(false)
 
-function InstallationManager() {
-  // Define estados possíveis da instalação
-  const [status, setStatus] = React.useState<'waiting' | 'downloading' | 'complete' | 'error'>('waiting');
-  const [progress, setProgress] = React.useState(0);
-  const [message, setMessage] = React.useState('');
-  const [isAppInstalled, setIsAppInstalled] = React.useState(false);
-
-  React.useEffect(() => {
-    // Verifica se o app já está instalado como PWA
+  useEffect(() => {
+    // Verificar se o app já está instalado
     if (window.matchMedia('(display-mode: standalone)').matches) {
-      setIsAppInstalled(true);
+      setIsAppInstalled(true)
     }
 
-    // Escuta por mensagens do service worker
+    // Lidar com mensagens do service worker
     const handleMessage = (event: MessageEvent) => {
       if (event.data) {
         if (event.data.type === 'CACHE_STARTED') {
-          setStatus('downloading');
-          setMessage(event.data.message || 'Iniciando download de recursos');
+          setStatus('downloading')
+          setMessage(event.data.message || 'Iniciando download de recursos')
         } else if (event.data.type === 'CACHE_PROGRESS') {
-          setStatus('downloading');
-          setProgress(event.data.progress || 0);
-          setMessage(event.data.message || 'Baixando recursos');
+          setStatus('downloading')
+          setProgress(event.data.progress || 0)
+          setMessage(event.data.message || 'Baixando recursos')
         } else if (event.data.type === 'CACHE_COMPLETE') {
-          setStatus('complete');
-          setProgress(100);
-          setMessage('Download completo! Seu app está pronto para uso offline.');
+          setStatus('complete')
+          setProgress(100)
+          setMessage('Download completo! Seu app está pronto para uso offline.')
         } else if (event.data.type === 'CACHE_ERROR') {
-          setStatus('error');
-          setMessage(event.data.message || 'Erro ao baixar recursos');
+          setStatus('error')
+          setMessage(event.data.message || 'Erro ao baixar recursos')
         }
       }
-    };
+    }
 
-    navigator.serviceWorker.addEventListener('message', handleMessage);
+    // Adicionar listener para mensagens do service worker
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener('message', handleMessage)
+    }
 
+    // Limpar listener ao desmontar o componente
     return () => {
-      navigator.serviceWorker.removeEventListener('message', handleMessage);
-    };
-  }, []);
+      if (navigator.serviceWorker) {
+        navigator.serviceWorker.removeEventListener('message', handleMessage)
+      }
+    }
+  }, [])
 
-  // Inicia o download completo
+  // Iniciar o download completo
   const startFullDownload = async () => {
     try {
-      setStatus('downloading');
-      setProgress(0);
-      setMessage('Iniciando download completo do aplicativo...');
+      setStatus('downloading')
+      setProgress(0)
+      setMessage('Iniciando download completo do aplicativo...')
 
-      // Verifica se o service worker está registrado
-      const registration = await navigator.serviceWorker.ready;
+      // Verificar se o service worker está registrado
+      const registration = await navigator.serviceWorker.ready
       
       if (!registration?.active) {
-        throw new Error('Service worker não está ativo. Por favor recarregue a página.');
+        throw new Error('Service worker não está ativo. Por favor recarregue a página.')
       }
 
       // Lista de rotas a serem cacheadas
@@ -79,114 +76,118 @@ function InstallationManager() {
         '/medicamentos',
         '/educacao',
         '/instalar',
-        '/offline.html'
-      ];
+        '/education',
+        '/profile',
+        '/measurements',
+        '/medications',
+        '/educativo'
+      ]
 
-      // Envia comando para o service worker iniciar o download completo
+      // Enviar comando para o service worker iniciar o download completo
       registration.active.postMessage({
-        type: 'CACHE_COMPLETE_APP',
+        type: 'CACHE_ALL_ROUTES',
         routes: routesToCache
-      });
+      })
 
       // O progresso será atualizado via eventos do service worker
     } catch (error) {
-      console.error('Erro ao iniciar download:', error);
-      setStatus('error');
-      setMessage(`Erro: ${error instanceof Error ? error.message : 'Desconhecido'}`);
+      console.error('Erro ao iniciar download:', error)
+      setStatus('error')
+      setMessage(`Erro: ${error instanceof Error ? error.message : 'Desconhecido'}`)
     }
-  };
+  }
 
   return (
-    <Stack spacing={3} alignItems="center">
-      <Typography variant="h5" align="center" gutterBottom>
-        Instalação Completa para Uso Offline
-      </Typography>
+    <div className="container max-w-md mx-auto py-8 px-4">
+      <Card className="p-6 shadow-md">
+        <div className="space-y-6">
+          <div className="space-y-2 text-center">
+            <h1 className="text-2xl font-bold">Instalação para Uso Offline</h1>
+            <p className="text-muted-foreground">
+              Este processo vai preparar o aplicativo para funcionar completamente sem internet.
+            </p>
+          </div>
 
-      {isAppInstalled && (
-        <Alert severity="info" sx={{ width: '100%' }}>
-          Você já está utilizando o aplicativo no modo instalado! Para garantir o acesso offline, conclua o processo de download abaixo.
-        </Alert>
-      )}
+          {isAppInstalled && (
+            <Alert className="mb-4">
+              <AlertTitle>Você já está usando o app instalado!</AlertTitle>
+              <AlertDescription>
+                Para garantir o acesso offline completo, conclua o processo de download abaixo.
+              </AlertDescription>
+            </Alert>
+          )}
 
-      <Box sx={{ textAlign: 'center', my: 2 }}>
-        <Typography variant="body1" paragraph>
-          Este processo vai fazer o download de todos os recursos necessários para que o aplicativo funcione 100% offline.
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Certifique-se de estar conectado a uma rede WiFi estável durante este processo.
-        </Typography>
-      </Box>
+          <div className="space-y-4">
+            {status === 'waiting' && (
+              <Button 
+                onClick={startFullDownload} 
+                className="w-full"
+                size="lg"
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Iniciar Download Completo
+              </Button>
+            )}
 
-      {status === 'waiting' && (
-        <Button 
-          variant="contained" 
-          size="large" 
-          color="primary" 
-          startIcon={<DownloadingIcon />}
-          onClick={startFullDownload}
-          sx={{ py: 1.5 }}
-        >
-          Iniciar Download Completo
-        </Button>
-      )}
+            {status === 'downloading' && (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span>Progresso</span>
+                    <span>{Math.round(progress)}%</span>
+                  </div>
+                  <Progress value={progress} />
+                </div>
+                <p className="text-sm text-muted-foreground text-center">
+                  {message}
+                </p>
+              </div>
+            )}
 
-      {status === 'downloading' && (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
-          <Box sx={{ position: 'relative', display: 'inline-flex', mb: 2 }}>
-            <CircularProgress variant="determinate" value={progress} size={80} />
-            <Box
-              sx={{
-                top: 0,
-                left: 0,
-                bottom: 0,
-                right: 0,
-                position: 'absolute',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Typography variant="caption" component="div" color="text.secondary">
-                {`${Math.round(progress)}%`}
-              </Typography>
-            </Box>
-          </Box>
-          <Typography variant="body2" color="text.secondary" align="center">
-            {message}
-          </Typography>
-        </Box>
-      )}
+            {status === 'complete' && (
+              <div className="text-center space-y-4">
+                <div className="mx-auto rounded-full bg-green-100 p-3 w-16 h-16 flex items-center justify-center">
+                  <Check className="h-8 w-8 text-green-600" />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-xl font-medium">Download Concluído!</h3>
+                  <p className="text-muted-foreground">
+                    Seu aplicativo está pronto para ser usado offline. Você pode fechar esta página.
+                  </p>
+                </div>
+                <Button variant="outline" onClick={() => window.location.href = '/'}>
+                  Voltar ao Início
+                </Button>
+              </div>
+            )}
 
-      {status === 'complete' && (
-        <Box sx={{ textAlign: 'center' }}>
-          <DoneAllIcon color="success" sx={{ fontSize: 60, mb: 2 }} />
-          <Typography variant="h6" gutterBottom>
-            Download Concluído!
-          </Typography>
-          <Typography variant="body1">
-            Seu aplicativo está pronto para ser usado offline. Você pode fechar esta página.
-          </Typography>
-        </Box>
-      )}
+            {status === 'error' && (
+              <div className="text-center space-y-4">
+                <div className="mx-auto rounded-full bg-red-100 p-3 w-16 h-16 flex items-center justify-center">
+                  <AlertCircle className="h-8 w-8 text-red-600" />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-xl font-medium">Erro na Instalação</h3>
+                  <p className="text-red-600 text-sm">
+                    {message}
+                  </p>
+                </div>
+                <Button onClick={startFullDownload}>
+                  Tentar Novamente
+                </Button>
+              </div>
+            )}
+          </div>
 
-      {status === 'error' && (
-        <Box sx={{ textAlign: 'center' }}>
-          <ErrorIcon color="error" sx={{ fontSize: 60, mb: 2 }} />
-          <Typography variant="h6" gutterBottom>
-            Erro na instalação
-          </Typography>
-          <Typography variant="body2" color="error" paragraph>
-            {message}
-          </Typography>
-          <Button 
-            variant="outlined" 
-            color="primary" 
-            onClick={startFullDownload}
-          >
-            Tentar novamente
-          </Button>
-        </Box>
-      )}
-    </Stack>
-  );
+          <div className="bg-muted p-3 rounded-md text-xs text-muted-foreground">
+            <p>
+              Certifique-se de estar conectado a uma rede WiFi estável durante este processo. 
+              Este download salvará os arquivos necessários no seu dispositivo para que o app 
+              funcione sem conexão com a internet.
+            </p>
+          </div>
+        </div>
+      </Card>
+    </div>
+  )
 } 
