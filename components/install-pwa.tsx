@@ -1,78 +1,184 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { Download, CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Download } from "lucide-react"
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>
+}
+
+// Interface para estender o Navigator para iOS
+interface NavigatorWithStandalone extends Navigator {
+  standalone?: boolean;
+}
 
 export default function InstallPWA() {
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
-  const [isInstallable, setIsInstallable] = useState(false)
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [isInstalled, setIsInstalled] = useState(false)
+  const [isInstallDismissed, setIsInstallDismissed] = useState(false)
+  const [showPrecacheButton, setShowPrecacheButton] = useState(false)
+  const [isPrecaching, setIsPrecaching] = useState(false)
+  const [precacheSuccess, setPrecacheSuccess] = useState(false)
 
   useEffect(() => {
-    // Detecta se o app já está instalado
-    if (window.matchMedia("(display-mode: standalone)").matches) {
-      setIsInstalled(true)
+    // Verificar se o app já está instalado
+    if (window.matchMedia('(display-mode: standalone)').matches || 
+        (window.navigator as NavigatorWithStandalone).standalone === true) {
+      setIsInstalled(true);
+      // Se estiver instalado, mostrar opção de pré-cache
+      setShowPrecacheButton(true);
     }
 
-    // Captura o evento beforeinstallprompt
-    const handleBeforeInstallPrompt = (e: Event) => {
-      // Previne o comportamento padrão do navegador
+    // Interceptar o evento beforeinstallprompt
+    const handler = (e: Event) => {
+      // Prevenir o prompt automático
       e.preventDefault()
-      // Armazena o evento para uso posterior
-      setDeferredPrompt(e)
-      // Mostra o botão de instalação
-      setIsInstallable(true)
+      // Armazenar o evento para uso futuro
+      setDeferredPrompt(e as BeforeInstallPromptEvent)
+      // Verificar no localStorage se o usuário já dispensou a instalação
+      const installDismissed = localStorage.getItem("installDismissed")
+      if (installDismissed) {
+        setIsInstallDismissed(true)
+      }
     }
 
-    // Detecta quando o app é instalado
+    // Detectar quando a instalação é concluída
     const handleAppInstalled = () => {
       setIsInstalled(true)
-      setIsInstallable(false)
       setDeferredPrompt(null)
+      // Mostrar opção de pré-cache quando instalado
+      setShowPrecacheButton(true)
+      console.log("PWA foi instalado com sucesso!")
     }
 
-    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt)
+    window.addEventListener("beforeinstallprompt", handler)
     window.addEventListener("appinstalled", handleAppInstalled)
 
     return () => {
-      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt)
+      window.removeEventListener("beforeinstallprompt", handler)
       window.removeEventListener("appinstalled", handleAppInstalled)
     }
   }, [])
 
-  const handleInstallClick = async () => {
+  const handleInstall = async () => {
     if (!deferredPrompt) return
 
-    // Mostra o prompt de instalação
-    deferredPrompt.prompt()
+    // Mostrar o prompt de instalação
+    await deferredPrompt.prompt()
 
-    // Aguarda a resposta do usuário
-    const { outcome } = await deferredPrompt.userChoice
+    // Aguardar a resposta do usuário
+    const choiceResult = await deferredPrompt.userChoice
 
-    // Limpa o prompt armazenado
-    setDeferredPrompt(null)
-
-    if (outcome === "accepted") {
+    // Se o usuário aceitar a instalação
+    if (choiceResult.outcome === "accepted") {
+      console.log("Usuário aceitou a instalação")
       setIsInstalled(true)
-      setIsInstallable(false)
+    } else {
+      console.log("Usuário dispensou a instalação")
+      // Salvar que o usuário dispensou para não mostrar o botão frequentemente
+      localStorage.setItem("installDismissed", "true")
+      setIsInstallDismissed(true)
     }
+
+    // Limpar o prompt após uso
+    setDeferredPrompt(null)
   }
 
-  if (!isInstallable || isInstalled) return null
+  const handlePrecache = async () => {
+    if (!navigator.serviceWorker.controller) {
+      console.log("Serviço de workers não disponível para pré-cache");
+      return;
+    }
+
+    setIsPrecaching(true);
+    
+    try {
+      // Lista de todas as páginas principais e suas subpáginas
+      const routesToCache = [
+        '/',
+        '/perfil',
+        '/medicoes',
+        '/medicamentos',
+        '/educacao',
+        '/education',
+        '/profile',
+        '/measurements',
+        '/medications',
+        '/educativo'
+      ];
+      
+      // Enviar mensagem para o service worker para cachear cada rota
+      for (const route of routesToCache) {
+        if (navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({
+            type: 'CACHE_NEW_ROUTE',
+            url: route
+          });
+          
+          // Aguardar um pouco entre cada requisição para não sobrecarregar
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
+      
+      setPrecacheSuccess(true);
+      // Resetar o status de sucesso após alguns segundos
+      setTimeout(() => setPrecacheSuccess(false), 3000);
+    } catch (error) {
+      console.error("Erro ao pré-cachear páginas:", error);
+    } finally {
+      setIsPrecaching(false);
+    }
+  };
+
+  // Se o app já estiver instalado ou o usuário tiver dispensado, não mostramos nada
+  if ((isInstalled && !showPrecacheButton) || (isInstallDismissed && !deferredPrompt)) {
+    return null
+  }
 
   return (
-    <div className="fixed bottom-4 left-0 right-0 mx-auto w-[90%] max-w-md bg-white dark:bg-gray-800 p-4 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 z-50">
-      <div className="flex items-center justify-between">
-        <div className="flex-1">
-          <h3 className="font-medium text-sm">Instale o aplicativo</h3>
-          <p className="text-xs text-muted-foreground">Acesse offline e receba notificações</p>
-        </div>
-        <Button onClick={handleInstallClick} className="ml-4 flex items-center gap-2" size="sm">
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      {deferredPrompt && !isInstalled && (
+        <Button 
+          onClick={handleInstall} 
+          size="sm" 
+          className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700"
+        >
           <Download className="h-4 w-4" />
-          Instalar
+          Instalar App
         </Button>
-      </div>
+      )}
+      
+      {showPrecacheButton && (
+        <Button
+          onClick={handlePrecache}
+          size="sm"
+          disabled={isPrecaching}
+          className={`flex items-center gap-2 ${
+            precacheSuccess 
+              ? "bg-green-600 hover:bg-green-700" 
+              : "bg-sky-600 hover:bg-sky-700"
+          }`}
+        >
+          {isPrecaching ? (
+            <span className="flex items-center gap-2">
+              <span className="animate-spin h-4 w-4 border-2 border-white border-opacity-50 border-t-transparent rounded-full"></span>
+              Cacheando...
+            </span>
+          ) : precacheSuccess ? (
+            <>
+              <CheckCircle className="h-4 w-4" />
+              Cacheado!
+            </>
+          ) : (
+            <>
+              <Download className="h-4 w-4" />
+              Usar Offline
+            </>
+          )}
+        </Button>
+      )}
     </div>
   )
 }

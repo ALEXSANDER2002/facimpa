@@ -1,54 +1,101 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
+
+interface SyncManager {
+  register(tag: string): Promise<void>;
+}
+
+interface ExtendedServiceWorkerRegistration extends ServiceWorkerRegistration {
+  sync?: SyncManager;
+}
 
 export default function RegisterSW() {
+  const [registration, setRegistration] = useState<ExtendedServiceWorkerRegistration | null>(null);
+
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", async () => {
+    // Função para registrar o service worker
+    const registerServiceWorker = async () => {
+      if ("serviceWorker" in navigator) {
         try {
-          const registration = await navigator.serviceWorker.register("/sw.js")
-          console.log("Service Worker registrado com sucesso:", registration.scope)
+          const reg = await navigator.serviceWorker.register("/sw.js") as ExtendedServiceWorkerRegistration;
+          console.log("Service Worker registrado com sucesso:", reg.scope);
+          setRegistration(reg);
 
-          // Registra para sincronização em segundo plano quando online
-          if ("sync" in registration) {
-            // Registra uma tarefa de sincronização
-            navigator.serviceWorker.ready.then((registration) => {
-              registration.sync.register("sync-data").catch((error) => {
-                console.error("Falha ao registrar sincronização em segundo plano:", error)
-              })
-            })
-          }
-
-          // Solicita permissão para notificações se ainda não concedida
-          if (
-            "Notification" in window &&
-            Notification.permission !== "granted" &&
-            Notification.permission !== "denied"
-          ) {
-            await Notification.requestPermission()
-          }
-        } catch (err) {
-          console.error("Falha ao registrar Service Worker:", err)
+          // Verificar se há uma nova versão do service worker
+          reg.addEventListener('updatefound', () => {
+            console.log('Novo Service Worker encontrado!');
+            const newWorker = reg.installing;
+            
+            if (newWorker) {
+              newWorker.addEventListener('statechange', () => {
+                console.log('Service Worker state:', newWorker.state);
+                if (newWorker.state === 'activated') {
+                  console.log('Novo Service Worker ativado');
+                  // Atualizar cache de todas as páginas principais
+                  cacheMainRoutes();
+                }
+              });
+            }
+          });
+        } catch (error) {
+          console.error("Falha ao registrar Service Worker:", error);
         }
-      })
+      }
+    };
 
-      // Detecta mudanças no status da conexão
-      window.addEventListener("online", () => {
-        console.log("Aplicativo está online")
-        // Tenta sincronizar dados quando voltar a ficar online
-        if (navigator.serviceWorker.controller) {
-          navigator.serviceWorker.ready.then((registration) => {
-            registration.sync.register("sync-data")
-          })
-        }
-      })
+    // Função para cachear as rotas principais explicitamente
+    const cacheMainRoutes = () => {
+      const mainRoutes = [
+        '/',
+        '/perfil',
+        '/medicoes',
+        '/medicamentos',
+        '/educacao'
+      ];
+      
+      if (registration && navigator.serviceWorker.controller) {
+        mainRoutes.forEach(route => {
+          if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage({
+              type: 'CACHE_NEW_ROUTE',
+              url: route
+            });
+          }
+        });
+      }
+    };
 
-      window.addEventListener("offline", () => {
-        console.log("Aplicativo está offline")
-      })
-    }
-  }, [])
+    // Registrar o service worker quando a página carrega
+    window.addEventListener("load", registerServiceWorker);
 
-  return null
+    // Eventos de conectividade para melhorar a experiência offline
+    const handleOnline = () => {
+      console.log('Aplicativo está online');
+      if (registration && registration.sync) {
+        // Solicitar sincronização quando ficar online
+        registration.sync.register('sync-data')
+          .then(() => console.log('Sincronização agendada'))
+          .catch((err: Error) => console.error('Erro ao agendar sincronização:', err));
+      }
+    };
+
+    const handleOffline = () => {
+      console.log('Aplicativo está offline');
+      // Poderia mostrar notificação ou banner informando usuário
+    };
+
+    // Adicionar ouvintes de eventos online/offline
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Limpar ouvintes quando o componente desmontar
+    return () => {
+      window.removeEventListener('load', registerServiceWorker);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [registration]);
+
+  return null;
 }
