@@ -2,7 +2,7 @@
 export default function sw() {
   return `
     // Este é o service worker que permite o funcionamento offline completo
-    const CACHE_NAME = 'gerenciador-saude-v5';
+    const CACHE_NAME = 'gerenciador-saude-v6-persistente';
     
     // Constante para verificar se deve mostrar logs detalhados
     const DEBUG = false;
@@ -33,14 +33,7 @@ export default function sw() {
       '/icons/icon-maskable-512x512.png',
       '/offline.html',
       '/next.svg',
-      '/vercel.svg',
-      '/_next/static/css/app.css',
-      '/_next/static/chunks/main.js',
-      '/_next/static/chunks/webpack.js',
-      '/_next/static/chunks/pages/_app.js',
-      '/_next/static/chunks/pages/index.js',
-      '/_next/static/chunks/polyfills.js',
-      '/_next/static/media/fonts/inter.css'
+      '/vercel.svg'
     ];
     
     // Páginas críticas que devem ser cacheadas prioritariamente
@@ -96,31 +89,31 @@ export default function sw() {
       );
     });
     
-    // Ativação do service worker - limpa caches antigos
+    // Ativação do service worker - preserva caches existentes
     self.addEventListener('activate', (event) => {
       logDebug('[ServiceWorker] Ativando...');
-      const cacheWhitelist = [CACHE_NAME];
+      
+      // Agora não vamos excluir caches antigos para manter tudo offline
+      // Apenas garantimos que o service worker controle todas as páginas
       event.waitUntil(
-        caches.keys().then((cacheNames) => {
-          return Promise.all(
-            cacheNames.map((cacheName) => {
-              if (cacheWhitelist.indexOf(cacheName) === -1) {
-                logDebug('[ServiceWorker] Removendo cache antigo:', cacheName);
-                return caches.delete(cacheName);
-              }
-            })
-          );
-        })
-        .then(() => {
-          logDebug('[ServiceWorker] Ativado e controlando páginas!');
-          // Garante que o service worker controle todas as páginas imediatamente
-          return self.clients.claim();
-        })
+        self.clients.claim()
+          .then(() => {
+            logDebug('[ServiceWorker] Ativado e controlando páginas!');
+            return self.clients.matchAll();
+          })
+          .then(clients => {
+            // Informar todas as abas que o novo service worker está ativo
+            clients.forEach(client => {
+              client.postMessage({
+                type: 'SW_ACTIVATED',
+                version: CACHE_NAME
+              });
+            });
+          })
       );
     });
     
-    // Estratégia de cache aprimorada: Cache First, then Network com fallback para offline
-    // E cache dinâmico para novos recursos acessados
+    // Cache tudo - estratégia de armazenamento persistente
     self.addEventListener('fetch', (event) => {
       // Ignora requisições não GET
       if (event.request.method !== 'GET') return;
@@ -128,88 +121,88 @@ export default function sw() {
       // Ignora requisições para APIs externas
       if (event.request.url.includes('/api/') || 
           event.request.url.includes('chrome-extension') ||
+          event.request.url.includes('devtools') ||
           event.request.url.match(/^https?:\\/\\/[^\\/]+\\/[^\\/]+\\/[^\\/]+\\/\\d+\\/\\w+/)) {
         return;
       }
       
-      // Estratégia de cache completa
+      // Estratégia: Cache First, depois Network, mas sempre cacheia
       event.respondWith(
         caches.match(event.request)
-          .then((cachedResponse) => {
-            // Cache hit - retorna a resposta do cache
-            if (cachedResponse) {
-              // Atualizando cache em background para próximas visitas
-              // mas somente se tivermos conexão e não for um reload forçado
-              if (navigator.onLine && !event.request.url.includes('reload=true')) {
-                fetch(event.request)
-                  .then(networkResponse => {
-                    if (networkResponse && networkResponse.ok) {
-                      caches.open(CACHE_NAME)
-                        .then(cache => cache.put(event.request, networkResponse.clone()));
-                    }
-                  })
-                  .catch(() => {});
-              }
+          .then(cachedResponse => {
+            // Se temos uma resposta em cache e não é um reload forçado, usamos ela
+            if (cachedResponse && !event.request.url.includes('reload=true')) {
               return cachedResponse;
             }
             
-            // Se não estiver no cache, tenta buscar da rede
-            const fetchRequest = event.request.clone();
-            
-            return fetch(fetchRequest)
-              .then((networkResponse) => {
-                // Verifica se recebemos uma resposta válida da rede
-                if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
+            // Caso contrário, buscamos da rede
+            return fetch(event.request)
+              .then(networkResponse => {
+                // Se a resposta da rede for válida
+                if (!networkResponse || networkResponse.status !== 200) {
                   return networkResponse;
                 }
                 
-                // Clone da resposta para poder usar duas vezes
-                const responseToCache = networkResponse.clone();
+                // Clonamos a resposta para poder usar em vários lugares
+                const clonedResponse = networkResponse.clone();
                 
-                // Adiciona a resposta ao cache para uso futuro - cache dinâmico
+                // Armazena a resposta no cache de forma assíncrona
                 caches.open(CACHE_NAME)
-                  .then((cache) => {
-                    cache.put(event.request, responseToCache);
-                    logDebug('[ServiceWorker] Novo recurso cacheado:', event.request.url);
+                  .then(cache => {
+                    // Verificamos se é um recurso HTML
+                    if (clonedResponse.headers.get('content-type')?.includes('text/html')) {
+                      // Para HTML, também cache recursos relacionados
+                      logDebug('[ServiceWorker] Cacheando página HTML:', event.request.url);
+                      
+                      // Também cache a versão sem trailing slash
+                      const url = new URL(event.request.url);
+                      if (url.pathname.endsWith('/')) {
+                        const pathWithoutSlash = url.pathname.slice(0, -1);
+                        const urlWithoutSlash = new URL(url.toString());
+                        urlWithoutSlash.pathname = pathWithoutSlash;
+                        
+                        // Tenta carregar e cachear essa URL também
+                        fetch(urlWithoutSlash.toString())
+                          .then(altResponse => {
+                            if (altResponse.ok) {
+                              cache.put(urlWithoutSlash, altResponse);
+                            }
+                          })
+                          .catch(() => {});
+                      }
+                    }
+                    
+                    // Sempre armazena a resposta original no cache
+                    cache.put(event.request, clonedResponse);
                   });
-                  
+                
                 return networkResponse;
               })
-              .catch(() => {
-                logDebug('[ServiceWorker] Fetch falhou, tentando fallback para:', event.request.url);
+              .catch(error => {
+                logDebug('[ServiceWorker] Erro de fetch, usando fallback:', error);
                 
-                // Se falhar ao buscar da rede, verifica se é uma página de navegação
+                // Se a solicitação era para uma página de navegação
                 if (event.request.mode === 'navigate') {
-                  // Para páginas críticas, tenta retornar a versão cacheada pelo pathname
+                  // Para lidar com mudanças de URL com e sem trailing slash
                   const url = new URL(event.request.url);
                   
-                  // Verificar se é uma página crítica pelo pathname
-                  if (CRITICAL_PAGES.some(page => url.pathname === page)) {
-                    return caches.match(url.pathname)
-                      .then(cachedPage => {
-                        if (cachedPage) return cachedPage;
-                        return caches.match('/offline.html');
-                      });
-                  }
+                  // Tenta encontrar uma versão com/sem trailing slash
+                  const alternativeUrl = url.pathname.endsWith('/') 
+                    ? url.pathname.slice(0, -1) 
+                    : url.pathname + '/';
                   
-                  // Também verifica se tem um cache exato para a URL completa
-                  return caches.match(event.request.url)
-                    .then(exactMatch => {
-                      if (exactMatch) return exactMatch;
+                  // Tenta encontrar no cache com caminho alternativo
+                  return caches.match(alternativeUrl)
+                    .then(altMatch => {
+                      if (altMatch) return altMatch;
+                      
+                      // Se falhar, retorna a página offline
                       return caches.match('/offline.html');
                     });
                 }
                 
-                // Para recursos estáticos (CSS, JS, imagens), tenta encontrar uma versão alternativa
-                if (event.request.url.match(/\\.(?:js|css|png|jpg|jpeg|svg|gif)$/)) {
-                  return caches.match(event.request.url);
-                }
-                
-                // Para outros recursos, retorna um placeholder ou mensagem de erro
-                return new Response('Recurso indisponível offline', {
-                  status: 503,
-                  statusText: 'Serviço Indisponível'
-                });
+                // Para recursos estáticos, tenta encontrar alternativas
+                return caches.match('/offline.html');
               });
           })
       );
@@ -217,10 +210,9 @@ export default function sw() {
     
     // Adiciona evento para lidar com mensagens do app principal
     self.addEventListener('message', (event) => {
+      // Mensagem para cachear explicitamente uma rota
       if (event.data && event.data.type === 'CACHE_NEW_ROUTE') {
-        // Cacheia uma nova rota explicitamente
         const urlToCache = event.data.url;
-        
         logDebug('[ServiceWorker] Cacheando nova rota via mensagem:', urlToCache);
         
         caches.open(CACHE_NAME)
@@ -229,11 +221,69 @@ export default function sw() {
               .then(response => {
                 if (!response.ok) throw new Error('Falha ao cachear rota: ' + urlToCache);
                 cache.put(urlToCache, response);
+                
+                // Também cache versões com e sem trailing slash
+                const url = new URL(urlToCache);
+                const alternativeUrl = url.pathname.endsWith('/') 
+                  ? url.pathname.slice(0, -1) 
+                  : url.pathname + '/';
+                
+                fetch(alternativeUrl)
+                  .then(altResponse => {
+                    if (altResponse.ok) cache.put(alternativeUrl, altResponse);
+                  })
+                  .catch(() => {});
               })
               .catch(err => {
                 if (DEBUG) console.error('[ServiceWorker] Erro ao cachear rota:', err);
               });
           });
+      }
+      
+      // Comando para cachear todas as rotas principais
+      if (event.data && event.data.type === 'CACHE_ALL_ROUTES') {
+        logDebug('[ServiceWorker] Iniciando cache completo do aplicativo');
+        
+        const allRoutes = [
+          '/',
+          '/perfil',
+          '/medicoes',
+          '/medicamentos',
+          '/educacao',
+          '/education',
+          '/profile',
+          '/measurements',
+          '/medications',
+          '/educativo'
+        ];
+        
+        caches.open(CACHE_NAME)
+          .then(cache => {
+            allRoutes.forEach(route => {
+              // Fetch com e sem trailing slash
+              fetch(route)
+                .then(response => {
+                  if (response.ok) cache.put(route, response.clone());
+                })
+                .catch(() => {});
+              
+              // Versão alternativa
+              const altRoute = route.endsWith('/') ? route.slice(0, -1) : route + '/';
+              fetch(altRoute)
+                .then(response => {
+                  if (response.ok) cache.put(altRoute, response.clone());
+                })
+                .catch(() => {});
+            });
+          });
+        
+        // Responder que começou o processo
+        if (event.source) {
+          event.source.postMessage({
+            type: 'CACHE_STARTED',
+            message: 'Iniciado processo de cache completo'
+          });
+        }
       }
     });
     
@@ -242,45 +292,11 @@ export default function sw() {
       if (event.tag === 'sync-data') {
         event.waitUntil(syncData());
       }
-      
-      if (event.tag === 'sync-perfil') {
-        event.waitUntil(syncPerfil());
-      }
-      
-      if (event.tag === 'sync-medicoes') {
-        event.waitUntil(syncMedicoes());
-      }
-      
-      if (event.tag === 'sync-medicamentos') {
-        event.waitUntil(syncMedicamentos());
-      }
     });
     
     // Função para sincronizar dados quando online
     function syncData() {
-      logDebug('[ServiceWorker] Sincronizando todos os dados...');
-      return Promise.all([
-        syncPerfil(),
-        syncMedicoes(),
-        syncMedicamentos()
-      ]);
-    }
-    
-    // Função específica para sincronizar dados do perfil
-    function syncPerfil() {
-      logDebug('[ServiceWorker] Sincronizando dados do perfil...');
-      return Promise.resolve();
-    }
-    
-    // Função para sincronizar medições 
-    function syncMedicoes() {
-      logDebug('[ServiceWorker] Sincronizando medições...');
-      return Promise.resolve();
-    }
-    
-    // Função para sincronizar medicamentos
-    function syncMedicamentos() {
-      logDebug('[ServiceWorker] Sincronizando medicamentos...');
+      logDebug('[ServiceWorker] Sincronizando dados locais...');
       return Promise.resolve();
     }
     
@@ -321,6 +337,6 @@ export default function sw() {
     });
     
     // Registra que é a versão mais recente do service worker
-    logDebug('[ServiceWorker] Script carregado! Versão 5');
+    logDebug('[ServiceWorker] Script carregado! Versão 6 - Persistente');
   `
 }
