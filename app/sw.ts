@@ -2,7 +2,17 @@
 export default function sw() {
   return `
     // Este é o service worker que permite o funcionamento offline completo
-    const CACHE_NAME = 'gerenciador-saude-v4';
+    const CACHE_NAME = 'gerenciador-saude-v5';
+    
+    // Constante para verificar se deve mostrar logs detalhados
+    const DEBUG = false;
+    
+    // Função de log que só exibe no modo debug
+    function logDebug(...args) {
+      if (DEBUG) {
+        console.log(...args);
+      }
+    }
     
     // Lista expandida de arquivos para cache
     const urlsToCache = [
@@ -42,13 +52,23 @@ export default function sw() {
       '/educacao'
     ];
     
+    // Indica se o app já foi visitado antes - usado para reduzir indicadores visuais
+    let isAppAlreadyVisited = false;
+    
+    // Verifica se o app já foi visitado antes ao iniciar o service worker
+    self.addEventListener('activate', (event) => {
+      caches.has(CACHE_NAME).then(hasCached => {
+        isAppAlreadyVisited = hasCached;
+      });
+    });
+    
     // Instalação do service worker - pré-cache de todos os recursos essenciais
     self.addEventListener('install', (event) => {
-      console.log('[ServiceWorker] Instalando...');
+      logDebug('[ServiceWorker] Instalando...');
       event.waitUntil(
         caches.open(CACHE_NAME)
           .then((cache) => {
-            console.log('[ServiceWorker] Cache aberto, pré-cacheando recursos...');
+            logDebug('[ServiceWorker] Cache aberto, pré-cacheando recursos...');
             
             // Primeiro cache as páginas críticas
             const criticalCaching = CRITICAL_PAGES.map(url => 
@@ -57,7 +77,9 @@ export default function sw() {
                   if (!response.ok) throw new Error('Falha ao buscar ' + url);
                   return cache.put(url, response);
                 })
-                .catch(err => console.warn('[ServiceWorker] Não foi possível cachear ' + url, err))
+                .catch(err => {
+                  if (DEBUG) console.warn('[ServiceWorker] Não foi possível cachear ' + url, err);
+                })
             );
             
             // Depois cache os outros recursos
@@ -67,7 +89,7 @@ export default function sw() {
             ]);
           })
           .then(() => {
-            console.log('[ServiceWorker] Todos os recursos foram cacheados');
+            logDebug('[ServiceWorker] Todos os recursos foram cacheados');
             // Force o service worker a se tornar ativo imediatamente
             return self.skipWaiting();
           })
@@ -76,21 +98,21 @@ export default function sw() {
     
     // Ativação do service worker - limpa caches antigos
     self.addEventListener('activate', (event) => {
-      console.log('[ServiceWorker] Ativando...');
+      logDebug('[ServiceWorker] Ativando...');
       const cacheWhitelist = [CACHE_NAME];
       event.waitUntil(
         caches.keys().then((cacheNames) => {
           return Promise.all(
             cacheNames.map((cacheName) => {
               if (cacheWhitelist.indexOf(cacheName) === -1) {
-                console.log('[ServiceWorker] Removendo cache antigo:', cacheName);
+                logDebug('[ServiceWorker] Removendo cache antigo:', cacheName);
                 return caches.delete(cacheName);
               }
             })
           );
         })
         .then(() => {
-          console.log('[ServiceWorker] Ativado e controlando páginas!');
+          logDebug('[ServiceWorker] Ativado e controlando páginas!');
           // Garante que o service worker controle todas as páginas imediatamente
           return self.clients.claim();
         })
@@ -117,8 +139,8 @@ export default function sw() {
             // Cache hit - retorna a resposta do cache
             if (cachedResponse) {
               // Atualizando cache em background para próximas visitas
-              // mas mantendo a resposta rápida do cache
-              if (navigator.onLine) {
+              // mas somente se tivermos conexão e não for um reload forçado
+              if (navigator.onLine && !event.request.url.includes('reload=true')) {
                 fetch(event.request)
                   .then(networkResponse => {
                     if (networkResponse && networkResponse.ok) {
@@ -148,13 +170,13 @@ export default function sw() {
                 caches.open(CACHE_NAME)
                   .then((cache) => {
                     cache.put(event.request, responseToCache);
-                    console.log('[ServiceWorker] Novo recurso cacheado:', event.request.url);
+                    logDebug('[ServiceWorker] Novo recurso cacheado:', event.request.url);
                   });
                   
                 return networkResponse;
               })
               .catch(() => {
-                console.log('[ServiceWorker] Fetch falhou, tentando fallback para:', event.request.url);
+                logDebug('[ServiceWorker] Fetch falhou, tentando fallback para:', event.request.url);
                 
                 // Se falhar ao buscar da rede, verifica se é uma página de navegação
                 if (event.request.mode === 'navigate') {
@@ -199,7 +221,7 @@ export default function sw() {
         // Cacheia uma nova rota explicitamente
         const urlToCache = event.data.url;
         
-        console.log('[ServiceWorker] Cacheando nova rota via mensagem:', urlToCache);
+        logDebug('[ServiceWorker] Cacheando nova rota via mensagem:', urlToCache);
         
         caches.open(CACHE_NAME)
           .then(cache => {
@@ -208,7 +230,9 @@ export default function sw() {
                 if (!response.ok) throw new Error('Falha ao cachear rota: ' + urlToCache);
                 cache.put(urlToCache, response);
               })
-              .catch(err => console.error('[ServiceWorker] Erro ao cachear rota:', err));
+              .catch(err => {
+                if (DEBUG) console.error('[ServiceWorker] Erro ao cachear rota:', err);
+              });
           });
       }
     });
@@ -234,7 +258,7 @@ export default function sw() {
     
     // Função para sincronizar dados quando online
     function syncData() {
-      console.log('[ServiceWorker] Sincronizando todos os dados...');
+      logDebug('[ServiceWorker] Sincronizando todos os dados...');
       return Promise.all([
         syncPerfil(),
         syncMedicoes(),
@@ -244,27 +268,19 @@ export default function sw() {
     
     // Função específica para sincronizar dados do perfil
     function syncPerfil() {
-      console.log('[ServiceWorker] Sincronizando dados do perfil...');
-      
-      // Aqui você implementaria a lógica para sincronizar com um servidor
-      // Por enquanto, apenas notifica o usuário
-      self.registration.showNotification('Perfil Atualizado', {
-        body: 'Seus dados de perfil foram salvos com sucesso.',
-        icon: '/icons/icon-192x192.png'
-      });
-      
+      logDebug('[ServiceWorker] Sincronizando dados do perfil...');
       return Promise.resolve();
     }
     
     // Função para sincronizar medições 
     function syncMedicoes() {
-      console.log('[ServiceWorker] Sincronizando medições...');
+      logDebug('[ServiceWorker] Sincronizando medições...');
       return Promise.resolve();
     }
     
     // Função para sincronizar medicamentos
     function syncMedicamentos() {
-      console.log('[ServiceWorker] Sincronizando medicamentos...');
+      logDebug('[ServiceWorker] Sincronizando medicamentos...');
       return Promise.resolve();
     }
     
@@ -304,6 +320,7 @@ export default function sw() {
       );
     });
     
-    console.log('[ServiceWorker] Script carregado!');
+    // Registra que é a versão mais recente do service worker
+    logDebug('[ServiceWorker] Script carregado! Versão 5');
   `
 }
