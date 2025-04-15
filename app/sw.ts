@@ -1,486 +1,323 @@
-// Este arquivo será usado como service worker para o PWA
-export default function sw() {
-  return `
-    // Este é o service worker que permite o funcionamento offline completo
-    const CACHE_NAME = 'gerenciador-saude-v7-offline-total';
-    
-    // Constante para verificar se deve mostrar logs detalhados
-    const DEBUG = false;
-    
-    // Função de log que só exibe no modo debug
-    function logDebug(...args) {
-      if (DEBUG) {
-        console.log(...args);
-      }
-    }
-    
-    // Lista completa de arquivos para cache inicial
-    const urlsToCache = [
-      '/',
-      '/educacao',
-      '/perfil',
-      '/medicoes',
-      '/medicamentos',
-      '/education',
-      '/profile',
-      '/measurements', 
-      '/medications',
-      '/educativo',
-      '/manifest.json',
-      '/icons/icon-192x192.png',
-      '/icons/icon-512x512.png',
-      '/icons/icon-maskable-192x192.png',
-      '/icons/icon-maskable-512x512.png',
-      '/offline.html',
-      '/next.svg',
-      '/vercel.svg'
-    ];
-    
-    // Padrões de arquivos essenciais a serem cacheados
-    const ESSENTIAL_FILE_PATTERNS = [
-      /\\.(?:js|css)$/,              // Arquivos JavaScript e CSS
-      /\\.(?:png|jpg|jpeg|gif|svg)$/, // Imagens
-      /\\.(?:woff|woff2|ttf|otf)$/,   // Fontes
-      /\\.(?:json|manifest)$/         // Arquivos JSON e manifestos
-    ];
-    
-    // Páginas críticas que devem ser sempre cacheadas
-    const CRITICAL_PAGES = [
-      '/',
-      '/perfil',
-      '/medicoes',
-      '/medicamentos',
-      '/educacao'
-    ];
-    
-    // Indica se o app já foi visitado antes - usado para reduzir indicadores visuais
-    let isAppAlreadyVisited = false;
-    
-    // Verifica se o app já foi visitado antes ao iniciar o service worker
-    self.addEventListener('activate', (event) => {
-      caches.has(CACHE_NAME).then(hasCached => {
-        isAppAlreadyVisited = hasCached;
-      });
-    });
-    
-    // Instalação do service worker - pré-cache de todos os recursos essenciais
-    self.addEventListener('install', (event) => {
-      logDebug('[ServiceWorker] Instalando...');
-      event.waitUntil(
-        caches.open(CACHE_NAME)
-          .then((cache) => {
-            logDebug('[ServiceWorker] Cache aberto, pré-cacheando recursos...');
-            
-            // Cache todas as páginas principais com método GET direto
-            const criticalCaching = CRITICAL_PAGES.map(url => 
-              fetch(new Request(url, { 
-                cache: 'reload',
-                mode: 'no-cors' // Permite buscar mesmo que a resposta não seja totalmente acessível
-              }))
-                .then(response => {
-                  return cache.put(url, response);
-                })
-                .catch(err => {
-                  if (DEBUG) console.warn('[ServiceWorker] Não foi possível cachear ' + url, err);
-                  // Em caso de erro, criar uma resposta simples para garantir pelo menos algo no cache
-                  return cache.put(url, new Response('Página offline', {
-                    headers: { 'Content-Type': 'text/html' }
-                  }));
-                })
-            );
-            
-            // Depois cache os outros recursos
-            return Promise.all([
-              ...criticalCaching,
-              cache.addAll(urlsToCache.filter(url => !CRITICAL_PAGES.includes(url)))
-            ]);
-          })
-          .then(() => {
-            logDebug('[ServiceWorker] Todos os recursos foram cacheados');
-            // Force o service worker a se tornar ativo imediatamente
-            return self.skipWaiting();
-          })
-      );
-    });
-    
-    // Ativação do service worker - preserva caches existentes
-    self.addEventListener('activate', (event) => {
-      logDebug('[ServiceWorker] Ativando...');
-      
-      // Agora não vamos excluir caches antigos para manter tudo offline
-      // Apenas garantimos que o service worker controle todas as páginas
-      event.waitUntil(
-        self.clients.claim()
-          .then(() => {
-            logDebug('[ServiceWorker] Ativado e controlando páginas!');
-            return self.clients.matchAll();
-          })
-          .then(clients => {
-            // Informar todas as abas que o novo service worker está ativo
-            clients.forEach(client => {
-              client.postMessage({
-                type: 'SW_ACTIVATED',
-                version: CACHE_NAME
-              });
-            });
-            
-            // Pré-cachear recursos dinâmicos importantes em segundo plano
-            cacheStaticAssets();
-          })
-      );
-    });
-    
-    // Função para cachear ativos estáticos importantes
-    function cacheStaticAssets() {
-      caches.open(CACHE_NAME).then(cache => {
-        // Caminhos de recursos importantes a serem cacheados
-        const staticAssets = [
-          '/_next/static/chunks/main.js',
-          '/_next/static/chunks/webpack.js',
-          '/_next/static/chunks/pages/_app.js',
-          '/_next/static/chunks/polyfills.js',
-          '/_next/static/css/app.css'
-        ];
+/// <reference lib="webworker" />
+
+// Importações dos módulos
+import { 
+  CACHE_VERSION, 
+  STATIC_CACHE, 
+  DYNAMIC_CACHE, 
+  PAGES_CACHE, 
+  URLS_TO_CACHE, 
+  MAIN_ROUTES 
+} from './sw/constants';
+
+import { 
+  sendCacheProgressUpdate, 
+  cacheUrl, 
+  cacheUrls 
+} from './sw/cache-utils';
+
+import { 
+  cacheFirst, 
+  networkFirst 
+} from './sw/strategies';
+
+import { 
+  handlePushNotification, 
+  handleNotificationClick 
+} from './sw/notifications';
+
+import {
+  openDatabase,
+  storeOfflineData,
+  getPendingOfflineData,
+  markOfflineDataSynced,
+  saveConfig,
+  getConfig
+} from './sw/indexeddb-utils';
+
+// Registrar o escopo global do service worker
+declare const self: ServiceWorkerGlobalScope;
+
+// Event Listeners
+
+// Instalação - pre-cache de recursos essenciais
+self.addEventListener('install', (event: ExtendableEvent) => {
+  console.log('[Service Worker] Instalando...');
+  
+  event.waitUntil(
+    cacheUrls(STATIC_CACHE, URLS_TO_CACHE)
+      .then(() => {
+        console.log('[Service Worker] Recursos iniciais em cache');
+        sendCacheProgressUpdate(30);
         
-        // Cache cada recurso
-        staticAssets.forEach(asset => {
-          fetch(asset, { mode: 'no-cors' })
-            .then(response => {
-              if (response) {
-                cache.put(asset, response);
-              }
-            })
-            .catch(() => {
-              // Ignorar erros silenciosamente
-            });
+        // Inicializar IndexedDB
+        return openDatabase().then(() => {
+          return saveConfig('lastInstall', Date.now());
         });
-      });
-    }
-    
-    // Verifica se o dispositivo está online
-    function isOnline() {
-      return typeof navigator !== 'undefined' && 
-             typeof navigator.onLine === 'boolean' ? 
-             navigator.onLine : true;
-    }
-    
-    // Função para encontrar melhor resposta de fallback para um recurso
-    async function findBestFallback(request) {
-      const cache = await caches.open(CACHE_NAME);
-      const url = new URL(request.url);
-      
-      // Para recursos estáticos, tentar encontrar baseado no nome do arquivo
-      const fileName = url.pathname.split('/').pop();
-      
-      // Se é uma navegação para uma página
-      if (request.mode === 'navigate') {
-        // Tentar encontrar versão alternativa (com/sem trailing slash)
-        const alternativeUrl = url.pathname.endsWith('/') 
-          ? url.pathname.slice(0, -1) 
-          : url.pathname + '/';
-          
-        // Verificar no cache
-        const cachedAlt = await caches.match(alternativeUrl);
-        if (cachedAlt) return cachedAlt;
+      })
+      .then(() => {
+        console.log('[Service Worker] IndexedDB inicializado');
+        // Uso de skipWaiting para assumir o controle imediatamente
+        return self.skipWaiting();
+      })
+      .catch(error => {
+        console.error('[Service Worker] Erro na instalação:', error);
+      })
+  );
+});
+
+// Ativação - limpeza de recursos antigos
+self.addEventListener('activate', (event: ExtendableEvent) => {
+  console.log('[Service Worker] Ativando...');
+  
+  event.waitUntil(
+    Promise.all([
+      // Limpeza de caches antigos
+      caches.keys()
+        .then(keys => {
+          return Promise.all(
+            keys.filter(key => {
+              return key.startsWith('health-pwa-') && 
+                     !key.includes(CACHE_VERSION);
+            }).map(key => {
+              console.log('[Service Worker] Removendo cache antigo:', key);
+              return caches.delete(key);
+            })
+          );
+        }),
         
-        // Se for uma das páginas críticas, enviar versão offline genérica
-        if (CRITICAL_PAGES.some(page => url.pathname.includes(page))) {
-          const fallback = await caches.match('/offline.html');
-          if (fallback) return fallback;
-        }
-        
-        // Última opção: offline.html
-        return caches.match('/offline.html');
-      }
+      // Salvando configuração de versão no IndexedDB
+      saveConfig('version', CACHE_VERSION)
+    ])
+    .then(() => {
+      console.log('[Service Worker] Agora usado como o worker ativo!');
+      sendCacheProgressUpdate(50);
       
-      // Para arquivos estáticos, tentar correspondência de padrão
-      for (const pattern of ESSENTIAL_FILE_PATTERNS) {
-        if (pattern.test(url.pathname)) {
-          // Para JS e CSS, retornar um arquivo vazio do mesmo tipo
-          if (/\\.js$/.test(url.pathname)) {
-            return new Response('// Arquivo JS offline', {
-              headers: { 'Content-Type': 'application/javascript' }
+      // Assumir o controle de todos os clientes não controlados
+      return self.clients.claim();
+    })
+    .then(() => {
+      // Notificar todos os clientes sobre a ativação
+      return self.clients.matchAll()
+        .then(clients => {
+          clients.forEach(client => {
+            client.postMessage({
+              type: 'SW_ACTIVATED',
+              version: CACHE_VERSION
             });
-          }
-          
-          if (/\\.css$/.test(url.pathname)) {
-            return new Response('/* Arquivo CSS offline */', {
-              headers: { 'Content-Type': 'text/css' }
-            });
-          }
-          
-          // Para imagens, tente achar qualquer imagem no cache
-          if (/\\.(png|jpg|jpeg|gif|svg)$/.test(url.pathname)) {
-            const cachedImages = await cache.keys();
-            for (const key of cachedImages) {
-              if (/\\.(png|jpg|jpeg|gif|svg)$/.test(key.url)) {
-                return cache.match(key);
-              }
-            }
-          }
-        }
-      }
-      
-      // Se nada funcionar, retorna uma resposta vazia mas válida
-      return new Response('', { 
-        status: 200, 
-        headers: { 'Content-Type': 'text/plain' }
-      });
-    }
-    
-    // Cache tudo - estratégia de armazenamento persistente
-    self.addEventListener('fetch', (event) => {
-      // Ignora requisições não GET
-      if (event.request.method !== 'GET') return;
-      
-      // Ignora recursos não importantes para o funcionamento offline
-      if (event.request.url.includes('/api/') || 
-          event.request.url.includes('chrome-extension') ||
-          event.request.url.includes('devtools') ||
-          event.request.url.includes('analytics') ||
-          event.request.url.includes('tracking') ||
-          event.request.url.match(/^https?:\\/\\/[^\\/]+\\/[^\\/]+\\/[^\\/]+\\/\\d+\\/\\w+/)) {
-        return;
-      }
-      
-      // Estratégia: Cache First com fallback inteligente
-      event.respondWith(
-        (async function() {
-          try {
-            // 1. Primeiro tenta buscar do cache
-            const cachedResponse = await caches.match(event.request);
-            if (cachedResponse) {
-              return cachedResponse;
-            }
-            
-            // 2. Se não estiver no cache e estivermos online, busca da rede
-            if (isOnline()) {
-              try {
-                const networkResponse = await fetch(event.request);
-                if (networkResponse && networkResponse.status === 200) {
-                  // Clona a resposta
-                  const responseToCache = networkResponse.clone();
-                  
-                  // Armazena em cache para uso futuro
-                  const cache = await caches.open(CACHE_NAME);
-                  await cache.put(event.request, responseToCache);
-                  
-                  // Se for HTML, também tenta cachear a versão alternativa
-                  if (responseToCache.headers.get('content-type')?.includes('text/html')) {
-                    const url = new URL(event.request.url);
-                    if (url.pathname.endsWith('/')) {
-                      const urlWithoutSlash = new URL(url.toString());
-                      urlWithoutSlash.pathname = url.pathname.slice(0, -1);
-                      try {
-                        const altResponse = await fetch(urlWithoutSlash);
-                        if (altResponse.ok) {
-                          await cache.put(urlWithoutSlash, altResponse);
-                        }
-                      } catch (e) {
-                        // Ignora erros ao cachear versões alternativas
-                      }
-                    }
-                  }
-                  
-                  return networkResponse;
-                }
-                
-                // Se a resposta não for 200, trata como offline
-                throw new Error('Resposta de rede inválida');
-              } catch (error) {
-                // Se falhar ao buscar da rede, procurar melhor fallback
-                return await findBestFallback(event.request);
-              }
-            } else {
-              // 3. Se estiver offline, busca o melhor fallback
-              return await findBestFallback(event.request);
-            }
-          } catch (error) {
-            // Última chance - página offline genérica
-            return await caches.match('/offline.html') || 
-                   new Response('Aplicativo está offline', { 
-                     status: 200,
-                     headers: { 'Content-Type': 'text/plain' }
-                   });
-          }
-        })()
-      );
-    });
-    
-    // Adiciona evento para lidar com mensagens do app principal
-    self.addEventListener('message', (event) => {
-      // Mensagem para cachear explicitamente uma rota
-      if (event.data && event.data.type === 'CACHE_NEW_ROUTE') {
-        const urlToCache = event.data.url;
-        logDebug('[ServiceWorker] Cacheando nova rota via mensagem:', urlToCache);
-        
-        caches.open(CACHE_NAME)
-          .then(cache => {
-            fetch(urlToCache, { mode: 'no-cors' })
-              .then(response => {
-                cache.put(urlToCache, response);
-                
-                // Também cache versões com e sem trailing slash
-                const url = new URL(urlToCache);
-                const alternativeUrl = url.pathname.endsWith('/') 
-                  ? url.pathname.slice(0, -1) 
-                  : url.pathname + '/';
-                
-                fetch(alternativeUrl, { mode: 'no-cors' })
-                  .then(altResponse => {
-                    cache.put(alternativeUrl, altResponse);
-                  })
-                  .catch(() => {
-                    // Criar resposta para o caminho alternativo mesmo em caso de erro
-                    cache.put(alternativeUrl, new Response('Página offline', {
-                      headers: { 'Content-Type': 'text/html' }
-                    }));
-                  });
-              })
-              .catch(() => {
-                // Em caso de erro, criar uma resposta simples para garantir pelo menos algo no cache
-                cache.put(urlToCache, new Response('Página offline', {
-                  headers: { 'Content-Type': 'text/html' }
-                }));
-              });
           });
-          
-        // Sinaliza que recebeu a solicitação, mesmo sem internet
+        });
+    })
+    .catch(error => {
+      console.error('[Service Worker] Erro na ativação:', error);
+    })
+  );
+});
+
+// Interceptação de requisições de rede
+self.addEventListener('fetch', (event: FetchEvent) => {
+  const request = event.request;
+  const url = new URL(request.url);
+  
+  // Ignorar requisições para o painel do Chrome e ferramentas de desenvolvimento
+  if (url.host === 'chrome-devtools-frontend.appspot.com' ||
+      url.pathname.startsWith('/devtools/') ||
+      url.protocol === 'chrome-extension:') {
+    return;
+  }
+  
+  // Ignorar requisições de API que não podem ser cacheadas facilmente
+  if (url.pathname.startsWith('/api/')) {
+    // Para requisições POST em modo offline, armazenar para sincronização posterior
+    if (request.method === 'POST' && !navigator.onLine) {
+      event.respondWith(
+        request.clone().text()
+          .then(body => {
+            // Armazenar a requisição para sincronização posterior
+            storeOfflineData(url.pathname, {
+              method: request.method,
+              url: request.url,
+              headers: Array.from(request.headers.entries()),
+              body: body
+            });
+            
+            // Retornar uma resposta "queued for sync"
+            return new Response(JSON.stringify({
+              success: true,
+              offline: true,
+              message: 'Dados armazenados para sincronização'
+            }), {
+              status: 202,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          })
+      );
+      return;
+    }
+    
+    // Para outras requisições de API, deixar passar para a rede
+    return;
+  }
+  
+  // Navegação para páginas HTML
+  if (request.mode === 'navigate') {
+    event.respondWith(networkFirst(request));
+    return;
+  }
+  
+  // Para recursos estáticos (imagens, CSS, JS, fontes)
+  if (request.method === 'GET' && (
+      request.url.match(/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2|woff|ttf)$/) ||
+      url.host === 'fonts.googleapis.com' ||
+      url.host === 'fonts.gstatic.com'
+    )) {
+    event.respondWith(cacheFirst(request));
+    return;
+  }
+  
+  // Para outras requisições GET, tenta network first
+  if (request.method === 'GET') {
+    event.respondWith(networkFirst(request));
+    return;
+  }
+});
+
+// Manipulador de mensagens do cliente
+self.addEventListener('message', (event) => {
+  // Skipwait - atualização imediata
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+    return;
+  }
+
+  // Cachear uma rota específica sob demanda
+  if (event.data && event.data.type === 'CACHE_NEW_ROUTE') {
+    const url = event.data.url;
+    console.log('[Service Worker] Cacheando rota:', url);
+    
+    cacheUrl(PAGES_CACHE, url)
+      .then(success => {
         if (event.source) {
           event.source.postMessage({
             type: 'ROUTE_CACHING_REQUESTED',
-            url: urlToCache
+            url: url,
+            success: success
           });
         }
-      }
-      
-      // Comando para cachear todas as rotas principais
-      if (event.data && event.data.type === 'CACHE_ALL_ROUTES') {
-        logDebug('[ServiceWorker] Iniciando cache completo do aplicativo');
-        
-        const allRoutes = [
-          '/',
-          '/perfil',
-          '/medicoes',
-          '/medicamentos',
-          '/educacao',
-          '/education',
-          '/profile',
-          '/measurements',
-          '/medications',
-          '/educativo'
-        ];
-        
-        // Primeiro responde que iniciou
-        if (event.source) {
-          event.source.postMessage({
-            type: 'CACHE_STARTED',
-            message: 'Iniciado processo de cache completo'
-          });
-        }
-        
-        // Cacheia cada rota em ordem
-        caches.open(CACHE_NAME)
-          .then(cache => {
-            allRoutes.forEach((route, index) => {
-              // Adiciona um pequeno atraso para não sobrecarregar
-              setTimeout(() => {
-                // Fetch com e sem trailing slash
-                fetch(route, { mode: 'no-cors' })
-                  .then(response => {
-                    cache.put(route, response.clone());
-                    
-                    // Notifica progresso
-                    if (event.source && index === allRoutes.length - 1) {
-                      event.source.postMessage({
-                        type: 'CACHE_PROGRESS',
-                        progress: 100,
-                        message: 'Cache completo'
-                      });
-                    }
-                  })
-                  .catch(() => {
-                    // Em caso de erro, criar uma resposta simples
-                    cache.put(route, new Response('Página offline', {
-                      headers: { 'Content-Type': 'text/html' }
-                    }));
-                  });
-                
-                // Versão alternativa
-                const altRoute = route.endsWith('/') ? route.slice(0, -1) : route + '/';
-                fetch(altRoute, { mode: 'no-cors' })
-                  .then(response => {
-                    cache.put(altRoute, response.clone());
-                  })
-                  .catch(() => {
-                    // Em caso de erro, criar uma resposta simples
-                    cache.put(altRoute, new Response('Página offline', {
-                      headers: { 'Content-Type': 'text/html' }
-                    }));
-                  });
-                
-                // Também cacheia recursos estáticos importantes
-                if (index === 0) {
-                  cacheStaticAssets();
-                }
-              }, index * 200); // Pequeno atraso entre requisições
-            });
-          });
-      }
-    });
-    
-    // Sincronização em segundo plano quando a conexão for restaurada
-    self.addEventListener('sync', (event) => {
-      if (event.tag === 'sync-data') {
-        event.waitUntil(syncData());
-      }
-    });
-    
-    // Função para sincronizar dados quando online
-    function syncData() {
-      logDebug('[ServiceWorker] Sincronizando dados locais...');
-      // Não faz nada especial por enquanto, apenas resolve a promise
-      return Promise.resolve();
+      });
+    return;
+  }
+  
+  // Cache completo para uso offline
+  if (event.data && event.data.type === 'CACHE_ALL_ROUTES') {
+    // Notificar que iniciou o processo
+    if (event.source) {
+      event.source.postMessage({
+        type: 'CACHE_STARTED',
+        message: 'Iniciando cache completo do aplicativo'
+      });
     }
     
-    // Gerenciamento de notificações push
-    self.addEventListener('push', (event) => {
-      const title = 'Gerenciador de Saúde';
-      const options = {
-        body: event.data ? event.data.text() : 'Notificação do Gerenciador de Saúde',
-        icon: '/icons/icon-192x192.png',
-        badge: '/icons/icon-192x192.png'
-      };
-      
-      event.waitUntil(
-        self.registration.showNotification(title, options)
-      );
-    });
+    // Lista completa de rotas para cachear
+    const routesToCache = event.data.routes || MAIN_ROUTES;
     
-    // Ação ao clicar na notificação
-    self.addEventListener('notificationclick', (event) => {
-      event.notification.close();
+    // Cachear cada rota com um pequeno atraso para não sobrecarregar
+    let progress = 0;
+    const totalRoutes = routesToCache.length;
+    
+    Promise.all(
+      routesToCache.map((route, index) => {
+        return new Promise<void>(resolve => {
+          // Adicionar um atraso progressivo para não sobrecarregar
+          setTimeout(() => {
+            cacheUrl(PAGES_CACHE, route)
+              .then(() => {
+                progress += (90 / totalRoutes);
+                sendCacheProgressUpdate(Math.min(Math.round(progress), 95));
+                resolve();
+              })
+              .catch(() => {
+                progress += (90 / totalRoutes);
+                sendCacheProgressUpdate(Math.min(Math.round(progress), 95));
+                resolve();
+              });
+          }, index * 300);
+        });
+      })
+    ).then(() => {
+      // Salvar a configuração no IndexedDB
+      return saveConfig('offlineModeEnabled', true);
+    }).then(() => {
+      // Notificar conclusão
+      sendCacheProgressUpdate(100);
       
-      // Redireciona para a página apropriada com base no tipo de notificação
-      let url = '/';
-      
-      if (event.notification.tag) {
-        if (event.notification.tag.startsWith('med-')) {
-          url = '/medicamentos';
-        } else if (event.notification.tag === 'perfil') {
-          url = '/perfil';
-        } else if (event.notification.tag === 'medicao') {
-          url = '/medicoes';
-        }
+      if (event.source) {
+        event.source.postMessage({
+          type: 'CACHE_COMPLETE',
+          message: 'Cache completo finalizado'
+        });
       }
-      
-      event.waitUntil(
-        clients.openWindow(url)
-      );
     });
     
-    // Registra que é a versão mais recente do service worker
-    logDebug('[ServiceWorker] Script carregado! Versão 7 - Completamente Offline');
-  `
+    return;
+  }
+});
+
+// Manipular eventos de sincronização em segundo plano
+self.addEventListener('sync', (event: SyncEvent) => {
+  if (event.tag === 'sync-pending-requests') {
+    event.waitUntil(syncPendingRequests());
+  }
+});
+
+// Função para sincronizar requisições pendentes quando estiver online
+async function syncPendingRequests() {
+  const pendingItems = await getPendingOfflineData();
+  
+  console.log('[Service Worker] Sincronizando', pendingItems.length, 'itens pendentes');
+  
+  const syncPromises = pendingItems.map(async (item) => {
+    try {
+      // Recriar a requisição a partir dos dados armazenados
+      const request = new Request(item.data.url, {
+        method: item.data.method,
+        headers: new Headers(item.data.headers),
+        body: item.data.method !== 'GET' ? item.data.body : undefined
+      });
+      
+      // Tentar enviar a requisição
+      const response = await fetch(request);
+      
+      if (response.ok) {
+        // Marcar como sincronizado se for bem-sucedido
+        await markOfflineDataSynced(item.id);
+        console.log('[Service Worker] Item sincronizado com sucesso:', item.id);
+        return true;
+      } else {
+        console.error('[Service Worker] Falha ao sincronizar item:', item.id, response.status);
+        return false;
+      }
+    } catch (error) {
+      console.error('[Service Worker] Erro ao sincronizar item:', item.id, error);
+      return false;
+    }
+  });
+  
+  return Promise.all(syncPromises);
 }
+
+// Manipulador de notificações push
+self.addEventListener('push', (event: PushEvent) => {
+  console.log('[Service Worker] Push recebido');
+  handlePushNotification(event);
+});
+
+// Manipulador de cliques em notificações
+self.addEventListener('notificationclick', (event: NotificationEvent) => {
+  console.log('[Service Worker] Clique em notificação');
+  event.waitUntil(handleNotificationClick(event));
+});
+
+// Expor escopo do service worker
+export {};
 

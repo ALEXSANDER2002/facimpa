@@ -1,8 +1,11 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Download, CheckCircle, Save, Wifi, WifiOff } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Progress } from "@/components/ui/progress"
+import { Card } from "@/components/ui/card"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>
@@ -12,6 +15,95 @@ interface BeforeInstallPromptEvent extends Event {
 // Interface para estender o Navigator para iOS
 interface NavigatorWithStandalone extends Navigator {
   standalone?: boolean;
+}
+
+// Componente para botão de instalação
+function InstallButton({ deferredPrompt, onInstallClick }: { 
+  deferredPrompt: BeforeInstallPromptEvent | null, 
+  onInstallClick: () => Promise<void> 
+}) {
+  if (!deferredPrompt) return null;
+  
+  return (
+    <Button 
+      variant="default" 
+      className="w-full mb-2" 
+      onClick={onInstallClick}
+    >
+      <Download className="mr-2 h-4 w-4" /> Instalar aplicativo
+    </Button>
+  );
+}
+
+// Componente para o botão de pré-cache
+function PrecacheButton({ isPrecaching, precacheSuccess, onPrecacheClick }: {
+  isPrecaching: boolean,
+  precacheSuccess: boolean,
+  onPrecacheClick: () => Promise<void>
+}) {
+  return (
+    <Button 
+      variant="outline" 
+      className="w-full relative mb-2" 
+      disabled={isPrecaching} 
+      onClick={onPrecacheClick}
+    >
+      {isPrecaching ? (
+        <>
+          <span className="mr-2">Preparando navegação rápida...</span>
+          <span className="animate-spin">⟳</span>
+        </>
+      ) : (
+        <>
+          <Wifi className="mr-2 h-4 w-4" /> Acelerar navegação
+          {precacheSuccess && (
+            <CheckCircle className="absolute right-2 h-4 w-4 text-green-500" />
+          )}
+        </>
+      )}
+    </Button>
+  );
+}
+
+// Componente para o botão de cache persistente
+function PersistentCacheButton({ 
+  isPersistentCaching, 
+  persistentSuccess, 
+  cacheProgress, 
+  onPersistentCacheClick 
+}: {
+  isPersistentCaching: boolean,
+  persistentSuccess: boolean,
+  cacheProgress: number,
+  onPersistentCacheClick: () => Promise<void>
+}) {
+  return (
+    <div className="w-full">
+      <Button 
+        variant="outline" 
+        className="w-full relative" 
+        disabled={isPersistentCaching} 
+        onClick={onPersistentCacheClick}
+      >
+        {isPersistentCaching ? (
+          <>
+            <span className="mr-2">Baixando recursos para uso offline...</span>
+          </>
+        ) : (
+          <>
+            <Save className="mr-2 h-4 w-4" /> Habilitar uso 100% offline
+            {persistentSuccess && (
+              <CheckCircle className="absolute right-2 h-4 w-4 text-green-500" />
+            )}
+          </>
+        )}
+      </Button>
+      
+      {isPersistentCaching && (
+        <Progress value={cacheProgress} className="h-1 mt-1" />
+      )}
+    </div>
+  );
 }
 
 export default function InstallPWA() {
@@ -78,6 +170,7 @@ export default function InstallPWA() {
             // Resetar o estado de sucesso após alguns segundos
             setTimeout(() => {
               setPersistentSuccess(false);
+              setIsPersistentCaching(false);
             }, 3000);
           }, 500);
         }
@@ -111,7 +204,7 @@ export default function InstallPWA() {
     }
   }, [])
 
-  const handleInstall = async () => {
+  const handleInstall = useCallback(async () => {
     if (!deferredPrompt) return
 
     // Mostrar o prompt de instalação
@@ -133,7 +226,7 @@ export default function InstallPWA() {
 
     // Limpar o prompt após uso
     setDeferredPrompt(null)
-  }
+  }, [deferredPrompt])
 
   // Função para cachear temporariamente as páginas principais
   const handlePrecache = async () => {
@@ -237,66 +330,47 @@ export default function InstallPWA() {
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-      {showInstallButton && (
-        <Button 
-          onClick={handleInstall} 
-          size="sm" 
-          className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700"
-        >
-          <Download className="h-4 w-4" />
-          Instalar App
-        </Button>
-      )}
-      
-      {(!totalOfflineDone || isPersistentCaching || persistentSuccess) && (
-        <div className="relative">
-          <Button
-            onClick={handlePersistentCache}
-            size="sm"
-            disabled={isPersistentCaching || totalOfflineDone}
-            className={`flex items-center gap-2 w-full ${
-              persistentSuccess 
-                ? "bg-green-600 hover:bg-green-700" 
-                : totalOfflineDone
-                  ? "bg-green-700 hover:bg-green-800"
-                  : "bg-purple-600 hover:bg-purple-700"
-            }`}
-          >
-            {isPersistentCaching ? (
-              <span className="flex items-center gap-2">
-                <span className="animate-spin h-4 w-4 border-2 border-white border-opacity-50 border-t-transparent rounded-full"></span>
-                Preparando para usar sem internet...
-              </span>
-            ) : persistentSuccess ? (
-              <>
-                <CheckCircle className="h-4 w-4" />
-                Modo 100% offline ativado!
-              </>
-            ) : totalOfflineDone ? (
-              <>
-                <WifiOff className="h-4 w-4" />
-                Modo 100% offline ativado
-              </>
-            ) : (
-              <>
-                <Wifi className="h-4 w-4" />
-                Ativar modo 100% offline
-              </>
-            )}
-          </Button>
-          
-          {/* Barra de progresso */}
-          {isPersistentCaching && (
-            <div className="w-full h-1 bg-gray-300 rounded-full mt-1 overflow-hidden">
-              <div 
-                className="h-full bg-green-500 transition-all duration-300 ease-out"
-                style={{ width: `${cacheProgress}%` }}
-              ></div>
-            </div>
-          )}
-        </div>
-      )}
+    <div className="fixed bottom-0 left-0 right-0 z-40 p-4 bg-background/80 backdrop-blur-sm border-t">
+      <Card className="p-3 shadow-md max-w-md mx-auto">
+        {isInstalled && (
+          <Alert className="mb-3">
+            <AlertTitle>Aplicativo instalado!</AlertTitle>
+            <AlertDescription>
+              Você já está usando a versão instalada do aplicativo.
+            </AlertDescription>
+          </Alert>
+        )}
+        
+        {!totalOfflineDone && (
+          <div className="text-xs text-muted-foreground mb-3">
+            Prepare seu aplicativo para funcionar offline e para melhor desempenho.
+          </div>
+        )}
+        
+        {showInstallButton && (
+          <InstallButton 
+            deferredPrompt={deferredPrompt} 
+            onInstallClick={handleInstall} 
+          />
+        )}
+        
+        {!totalOfflineDone && (
+          <>
+            <PrecacheButton 
+              isPrecaching={isPrecaching} 
+              precacheSuccess={precacheSuccess} 
+              onPrecacheClick={handlePrecache} 
+            />
+            
+            <PersistentCacheButton 
+              isPersistentCaching={isPersistentCaching} 
+              persistentSuccess={persistentSuccess} 
+              cacheProgress={cacheProgress} 
+              onPersistentCacheClick={handlePersistentCache} 
+            />
+          </>
+        )}
+      </Card>
     </div>
   )
 }
