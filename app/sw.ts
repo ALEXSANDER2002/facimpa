@@ -2,7 +2,7 @@
 export default function sw() {
   return `
     // Este é o service worker que permite o funcionamento offline completo
-    const CACHE_NAME = 'gerenciador-saude-v6-persistente';
+    const CACHE_NAME = 'gerenciador-saude-v7-offline-total';
     
     // Constante para verificar se deve mostrar logs detalhados
     const DEBUG = false;
@@ -14,7 +14,7 @@ export default function sw() {
       }
     }
     
-    // Lista expandida de arquivos para cache
+    // Lista completa de arquivos para cache inicial
     const urlsToCache = [
       '/',
       '/educacao',
@@ -36,7 +36,15 @@ export default function sw() {
       '/vercel.svg'
     ];
     
-    // Páginas críticas que devem ser cacheadas prioritariamente
+    // Padrões de arquivos essenciais a serem cacheados
+    const ESSENTIAL_FILE_PATTERNS = [
+      /\\.(?:js|css)$/,              // Arquivos JavaScript e CSS
+      /\\.(?:png|jpg|jpeg|gif|svg)$/, // Imagens
+      /\\.(?:woff|woff2|ttf|otf)$/,   // Fontes
+      /\\.(?:json|manifest)$/         // Arquivos JSON e manifestos
+    ];
+    
+    // Páginas críticas que devem ser sempre cacheadas
     const CRITICAL_PAGES = [
       '/',
       '/perfil',
@@ -63,15 +71,21 @@ export default function sw() {
           .then((cache) => {
             logDebug('[ServiceWorker] Cache aberto, pré-cacheando recursos...');
             
-            // Primeiro cache as páginas críticas
+            // Cache todas as páginas principais com método GET direto
             const criticalCaching = CRITICAL_PAGES.map(url => 
-              fetch(new Request(url, { cache: 'reload' }))
+              fetch(new Request(url, { 
+                cache: 'reload',
+                mode: 'no-cors' // Permite buscar mesmo que a resposta não seja totalmente acessível
+              }))
                 .then(response => {
-                  if (!response.ok) throw new Error('Falha ao buscar ' + url);
                   return cache.put(url, response);
                 })
                 .catch(err => {
                   if (DEBUG) console.warn('[ServiceWorker] Não foi possível cachear ' + url, err);
+                  // Em caso de erro, criar uma resposta simples para garantir pelo menos algo no cache
+                  return cache.put(url, new Response('Página offline', {
+                    headers: { 'Content-Type': 'text/html' }
+                  }));
                 })
             );
             
@@ -109,102 +123,187 @@ export default function sw() {
                 version: CACHE_NAME
               });
             });
+            
+            // Pré-cachear recursos dinâmicos importantes em segundo plano
+            cacheStaticAssets();
           })
       );
     });
+    
+    // Função para cachear ativos estáticos importantes
+    function cacheStaticAssets() {
+      caches.open(CACHE_NAME).then(cache => {
+        // Caminhos de recursos importantes a serem cacheados
+        const staticAssets = [
+          '/_next/static/chunks/main.js',
+          '/_next/static/chunks/webpack.js',
+          '/_next/static/chunks/pages/_app.js',
+          '/_next/static/chunks/polyfills.js',
+          '/_next/static/css/app.css'
+        ];
+        
+        // Cache cada recurso
+        staticAssets.forEach(asset => {
+          fetch(asset, { mode: 'no-cors' })
+            .then(response => {
+              if (response) {
+                cache.put(asset, response);
+              }
+            })
+            .catch(() => {
+              // Ignorar erros silenciosamente
+            });
+        });
+      });
+    }
+    
+    // Verifica se o dispositivo está online
+    function isOnline() {
+      return typeof navigator !== 'undefined' && 
+             typeof navigator.onLine === 'boolean' ? 
+             navigator.onLine : true;
+    }
+    
+    // Função para encontrar melhor resposta de fallback para um recurso
+    async function findBestFallback(request) {
+      const cache = await caches.open(CACHE_NAME);
+      const url = new URL(request.url);
+      
+      // Para recursos estáticos, tentar encontrar baseado no nome do arquivo
+      const fileName = url.pathname.split('/').pop();
+      
+      // Se é uma navegação para uma página
+      if (request.mode === 'navigate') {
+        // Tentar encontrar versão alternativa (com/sem trailing slash)
+        const alternativeUrl = url.pathname.endsWith('/') 
+          ? url.pathname.slice(0, -1) 
+          : url.pathname + '/';
+          
+        // Verificar no cache
+        const cachedAlt = await caches.match(alternativeUrl);
+        if (cachedAlt) return cachedAlt;
+        
+        // Se for uma das páginas críticas, enviar versão offline genérica
+        if (CRITICAL_PAGES.some(page => url.pathname.includes(page))) {
+          const fallback = await caches.match('/offline.html');
+          if (fallback) return fallback;
+        }
+        
+        // Última opção: offline.html
+        return caches.match('/offline.html');
+      }
+      
+      // Para arquivos estáticos, tentar correspondência de padrão
+      for (const pattern of ESSENTIAL_FILE_PATTERNS) {
+        if (pattern.test(url.pathname)) {
+          // Para JS e CSS, retornar um arquivo vazio do mesmo tipo
+          if (/\\.js$/.test(url.pathname)) {
+            return new Response('// Arquivo JS offline', {
+              headers: { 'Content-Type': 'application/javascript' }
+            });
+          }
+          
+          if (/\\.css$/.test(url.pathname)) {
+            return new Response('/* Arquivo CSS offline */', {
+              headers: { 'Content-Type': 'text/css' }
+            });
+          }
+          
+          // Para imagens, tente achar qualquer imagem no cache
+          if (/\\.(png|jpg|jpeg|gif|svg)$/.test(url.pathname)) {
+            const cachedImages = await cache.keys();
+            for (const key of cachedImages) {
+              if (/\\.(png|jpg|jpeg|gif|svg)$/.test(key.url)) {
+                return cache.match(key);
+              }
+            }
+          }
+        }
+      }
+      
+      // Se nada funcionar, retorna uma resposta vazia mas válida
+      return new Response('', { 
+        status: 200, 
+        headers: { 'Content-Type': 'text/plain' }
+      });
+    }
     
     // Cache tudo - estratégia de armazenamento persistente
     self.addEventListener('fetch', (event) => {
       // Ignora requisições não GET
       if (event.request.method !== 'GET') return;
       
-      // Ignora requisições para APIs externas
+      // Ignora recursos não importantes para o funcionamento offline
       if (event.request.url.includes('/api/') || 
           event.request.url.includes('chrome-extension') ||
           event.request.url.includes('devtools') ||
+          event.request.url.includes('analytics') ||
+          event.request.url.includes('tracking') ||
           event.request.url.match(/^https?:\\/\\/[^\\/]+\\/[^\\/]+\\/[^\\/]+\\/\\d+\\/\\w+/)) {
         return;
       }
       
-      // Estratégia: Cache First, depois Network, mas sempre cacheia
+      // Estratégia: Cache First com fallback inteligente
       event.respondWith(
-        caches.match(event.request)
-          .then(cachedResponse => {
-            // Se temos uma resposta em cache e não é um reload forçado, usamos ela
-            if (cachedResponse && !event.request.url.includes('reload=true')) {
+        (async function() {
+          try {
+            // 1. Primeiro tenta buscar do cache
+            const cachedResponse = await caches.match(event.request);
+            if (cachedResponse) {
               return cachedResponse;
             }
             
-            // Caso contrário, buscamos da rede
-            return fetch(event.request)
-              .then(networkResponse => {
-                // Se a resposta da rede for válida
-                if (!networkResponse || networkResponse.status !== 200) {
+            // 2. Se não estiver no cache e estivermos online, busca da rede
+            if (isOnline()) {
+              try {
+                const networkResponse = await fetch(event.request);
+                if (networkResponse && networkResponse.status === 200) {
+                  // Clona a resposta
+                  const responseToCache = networkResponse.clone();
+                  
+                  // Armazena em cache para uso futuro
+                  const cache = await caches.open(CACHE_NAME);
+                  await cache.put(event.request, responseToCache);
+                  
+                  // Se for HTML, também tenta cachear a versão alternativa
+                  if (responseToCache.headers.get('content-type')?.includes('text/html')) {
+                    const url = new URL(event.request.url);
+                    if (url.pathname.endsWith('/')) {
+                      const urlWithoutSlash = new URL(url.toString());
+                      urlWithoutSlash.pathname = url.pathname.slice(0, -1);
+                      try {
+                        const altResponse = await fetch(urlWithoutSlash);
+                        if (altResponse.ok) {
+                          await cache.put(urlWithoutSlash, altResponse);
+                        }
+                      } catch (e) {
+                        // Ignora erros ao cachear versões alternativas
+                      }
+                    }
+                  }
+                  
                   return networkResponse;
                 }
                 
-                // Clonamos a resposta para poder usar em vários lugares
-                const clonedResponse = networkResponse.clone();
-                
-                // Armazena a resposta no cache de forma assíncrona
-                caches.open(CACHE_NAME)
-                  .then(cache => {
-                    // Verificamos se é um recurso HTML
-                    if (clonedResponse.headers.get('content-type')?.includes('text/html')) {
-                      // Para HTML, também cache recursos relacionados
-                      logDebug('[ServiceWorker] Cacheando página HTML:', event.request.url);
-                      
-                      // Também cache a versão sem trailing slash
-                      const url = new URL(event.request.url);
-                      if (url.pathname.endsWith('/')) {
-                        const pathWithoutSlash = url.pathname.slice(0, -1);
-                        const urlWithoutSlash = new URL(url.toString());
-                        urlWithoutSlash.pathname = pathWithoutSlash;
-                        
-                        // Tenta carregar e cachear essa URL também
-                        fetch(urlWithoutSlash.toString())
-                          .then(altResponse => {
-                            if (altResponse.ok) {
-                              cache.put(urlWithoutSlash, altResponse);
-                            }
-                          })
-                          .catch(() => {});
-                      }
-                    }
-                    
-                    // Sempre armazena a resposta original no cache
-                    cache.put(event.request, clonedResponse);
-                  });
-                
-                return networkResponse;
-              })
-              .catch(error => {
-                logDebug('[ServiceWorker] Erro de fetch, usando fallback:', error);
-                
-                // Se a solicitação era para uma página de navegação
-                if (event.request.mode === 'navigate') {
-                  // Para lidar com mudanças de URL com e sem trailing slash
-                  const url = new URL(event.request.url);
-                  
-                  // Tenta encontrar uma versão com/sem trailing slash
-                  const alternativeUrl = url.pathname.endsWith('/') 
-                    ? url.pathname.slice(0, -1) 
-                    : url.pathname + '/';
-                  
-                  // Tenta encontrar no cache com caminho alternativo
-                  return caches.match(alternativeUrl)
-                    .then(altMatch => {
-                      if (altMatch) return altMatch;
-                      
-                      // Se falhar, retorna a página offline
-                      return caches.match('/offline.html');
-                    });
-                }
-                
-                // Para recursos estáticos, tenta encontrar alternativas
-                return caches.match('/offline.html');
-              });
-          })
+                // Se a resposta não for 200, trata como offline
+                throw new Error('Resposta de rede inválida');
+              } catch (error) {
+                // Se falhar ao buscar da rede, procurar melhor fallback
+                return await findBestFallback(event.request);
+              }
+            } else {
+              // 3. Se estiver offline, busca o melhor fallback
+              return await findBestFallback(event.request);
+            }
+          } catch (error) {
+            // Última chance - página offline genérica
+            return await caches.match('/offline.html') || 
+                   new Response('Aplicativo está offline', { 
+                     status: 200,
+                     headers: { 'Content-Type': 'text/plain' }
+                   });
+          }
+        })()
       );
     });
     
@@ -217,9 +316,8 @@ export default function sw() {
         
         caches.open(CACHE_NAME)
           .then(cache => {
-            fetch(urlToCache)
+            fetch(urlToCache, { mode: 'no-cors' })
               .then(response => {
-                if (!response.ok) throw new Error('Falha ao cachear rota: ' + urlToCache);
                 cache.put(urlToCache, response);
                 
                 // Também cache versões com e sem trailing slash
@@ -228,16 +326,32 @@ export default function sw() {
                   ? url.pathname.slice(0, -1) 
                   : url.pathname + '/';
                 
-                fetch(alternativeUrl)
+                fetch(alternativeUrl, { mode: 'no-cors' })
                   .then(altResponse => {
-                    if (altResponse.ok) cache.put(alternativeUrl, altResponse);
+                    cache.put(alternativeUrl, altResponse);
                   })
-                  .catch(() => {});
+                  .catch(() => {
+                    // Criar resposta para o caminho alternativo mesmo em caso de erro
+                    cache.put(alternativeUrl, new Response('Página offline', {
+                      headers: { 'Content-Type': 'text/html' }
+                    }));
+                  });
               })
-              .catch(err => {
-                if (DEBUG) console.error('[ServiceWorker] Erro ao cachear rota:', err);
+              .catch(() => {
+                // Em caso de erro, criar uma resposta simples para garantir pelo menos algo no cache
+                cache.put(urlToCache, new Response('Página offline', {
+                  headers: { 'Content-Type': 'text/html' }
+                }));
               });
           });
+          
+        // Sinaliza que recebeu a solicitação, mesmo sem internet
+        if (event.source) {
+          event.source.postMessage({
+            type: 'ROUTE_CACHING_REQUESTED',
+            url: urlToCache
+          });
+        }
       }
       
       // Comando para cachear todas as rotas principais
@@ -257,33 +371,61 @@ export default function sw() {
           '/educativo'
         ];
         
-        caches.open(CACHE_NAME)
-          .then(cache => {
-            allRoutes.forEach(route => {
-              // Fetch com e sem trailing slash
-              fetch(route)
-                .then(response => {
-                  if (response.ok) cache.put(route, response.clone());
-                })
-                .catch(() => {});
-              
-              // Versão alternativa
-              const altRoute = route.endsWith('/') ? route.slice(0, -1) : route + '/';
-              fetch(altRoute)
-                .then(response => {
-                  if (response.ok) cache.put(altRoute, response.clone());
-                })
-                .catch(() => {});
-            });
-          });
-        
-        // Responder que começou o processo
+        // Primeiro responde que iniciou
         if (event.source) {
           event.source.postMessage({
             type: 'CACHE_STARTED',
             message: 'Iniciado processo de cache completo'
           });
         }
+        
+        // Cacheia cada rota em ordem
+        caches.open(CACHE_NAME)
+          .then(cache => {
+            allRoutes.forEach((route, index) => {
+              // Adiciona um pequeno atraso para não sobrecarregar
+              setTimeout(() => {
+                // Fetch com e sem trailing slash
+                fetch(route, { mode: 'no-cors' })
+                  .then(response => {
+                    cache.put(route, response.clone());
+                    
+                    // Notifica progresso
+                    if (event.source && index === allRoutes.length - 1) {
+                      event.source.postMessage({
+                        type: 'CACHE_PROGRESS',
+                        progress: 100,
+                        message: 'Cache completo'
+                      });
+                    }
+                  })
+                  .catch(() => {
+                    // Em caso de erro, criar uma resposta simples
+                    cache.put(route, new Response('Página offline', {
+                      headers: { 'Content-Type': 'text/html' }
+                    }));
+                  });
+                
+                // Versão alternativa
+                const altRoute = route.endsWith('/') ? route.slice(0, -1) : route + '/';
+                fetch(altRoute, { mode: 'no-cors' })
+                  .then(response => {
+                    cache.put(altRoute, response.clone());
+                  })
+                  .catch(() => {
+                    // Em caso de erro, criar uma resposta simples
+                    cache.put(altRoute, new Response('Página offline', {
+                      headers: { 'Content-Type': 'text/html' }
+                    }));
+                  });
+                
+                // Também cacheia recursos estáticos importantes
+                if (index === 0) {
+                  cacheStaticAssets();
+                }
+              }, index * 200); // Pequeno atraso entre requisições
+            });
+          });
       }
     });
     
@@ -297,6 +439,7 @@ export default function sw() {
     // Função para sincronizar dados quando online
     function syncData() {
       logDebug('[ServiceWorker] Sincronizando dados locais...');
+      // Não faz nada especial por enquanto, apenas resolve a promise
       return Promise.resolve();
     }
     
@@ -337,6 +480,7 @@ export default function sw() {
     });
     
     // Registra que é a versão mais recente do service worker
-    logDebug('[ServiceWorker] Script carregado! Versão 6 - Persistente');
+    logDebug('[ServiceWorker] Script carregado! Versão 7 - Completamente Offline');
   `
 }
+
