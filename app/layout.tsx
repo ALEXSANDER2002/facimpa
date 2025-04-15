@@ -13,7 +13,7 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "Gerenciador de Saúde - Prevenção de AVC",
   description: "Gerencie sua pressão arterial e diabetes para prevenir AVC",
-  manifest: "/manifest.json",
+  manifest: "/manifest.webmanifest",
   themeColor: "#0284c7",
   appleWebApp: {
     capable: true,

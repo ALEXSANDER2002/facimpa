@@ -194,7 +194,7 @@ self.addEventListener('message', (event) => {
             .then((clients) => {
               clients.forEach((client) => {
                 client.postMessage({
-                  type: 'CACHE_COMPLETE',
+                  type: 'CACHE_PROGRESS',
                   progress: 100
                 });
               });
@@ -236,6 +236,18 @@ self.addEventListener('message', (event) => {
       
       // Iniciar o processo de cache
       cacheNext(0);
+    } else {
+      console.log('[Service Worker] Nenhuma rota especificada para cache offline');
+      // Notificar erro
+      self.clients.matchAll()
+        .then((clients) => {
+          clients.forEach((client) => {
+            client.postMessage({
+              type: 'CACHE_ERROR',
+              message: 'Nenhuma rota especificada'
+            });
+          });
+        });
     }
   }
 }); 
