@@ -6,7 +6,6 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { FeedbackProvider } from "@/components/feedback-provider"
 import RegisterSW from "@/components/register-sw"
 import OfflineIndicator from "@/components/offline-indicator"
-import InstallPWA from "@/components/install-pwa"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -43,7 +42,6 @@ export default function RootLayout({
           <FeedbackProvider>
             <OfflineIndicator />
             {children}
-            <InstallPWA />
             <RegisterSW />
           </FeedbackProvider>
         </ThemeProvider>
